@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+src/pyscholarly/__init__.py
+src/pyscholarly/scholarly.py
+src/pyscholarly.egg-info/PKG-INFO
+src/pyscholarly.egg-info/SOURCES.txt
+src/pyscholarly.egg-info/dependency_links.txt
+src/pyscholarly.egg-info/requires.txt
+src/pyscholarly.egg-info/top_level.txt
+tests/test_scholarly.py

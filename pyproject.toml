@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyscholarly"
+version = "0.1.5"
+authors = [
+    { name = "Rach Pradhan", email = "me@rachit.ai" },
+]
+description = "An async Python library for scraping Google Scholar profiles"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "playwright>=1.40.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/pyscholarly"
+"Bug Tracker" = "https://github.com/yourusername/pyscholarly/issues"
