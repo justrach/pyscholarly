@@ -1,11 +1,11 @@
 from playwright.async_api import async_playwright
 from datetime import datetime
-from typing import Dict, List, Optional
+import re
 import asyncio
+from typing import Dict, List, Optional
+import json
 
 class Scholar:
-    """A class to interact with Google Scholar profiles."""
-    
     def __init__(self):
         self._playwright = None
         self._browser = None
@@ -21,38 +21,43 @@ class Scholar:
         if self._playwright:
             await self._playwright.stop()
 
-    async def get_author_data(self, author_id: str) -> Dict:
-        """
-        Fetch author data from Google Scholar.
-        
-        Args:
-            author_id (str): The Google Scholar author ID
-            
-        Returns:
-            Dict: Author data including citations, publications, and metrics
-        """
-        url = f"https://scholar.google.com/citations?user={author_id}&hl=en"
+    async def _get_page_content(self, url: str) -> str:
         page = await self._browser.new_page()
-        
         try:
             await page.goto(url)
+            # Wait for the citations section to load
             await page.wait_for_selector("#gsc_rsb_cit")
-            
-            # Get author name
+            content = await page.content()
+            return content
+        finally:
+            await page.close()
+
+    async def get_author_data(self, scholar_id: str) -> Dict:
+        url = f"https://scholar.google.com/citations?user={scholar_id}&hl=en"
+        content = await self._get_page_content(url)
+
+        page = await self._browser.new_page()
+        await page.set_content(content)
+
+        try:
+            # Get basic author information
             name = await page.evaluate('() => document.querySelector("#gsc_prf_in")?.innerText || ""')
             
-            # Get citation statistics
+            # Get citation statistics from the correct table within gsc_rsb_cit
             stats = {}
-            rows = await page.query_selector_all("#gsc_rsb_st tbody tr")
+            rows = await page.query_selector_all("#gsc_rsb_cit #gsc_rsb_st tbody tr")
             
             for row in rows:
-                cells = await row.query_selector_all("td")
-                if len(cells) == 3:  # Metric name, all-time value, recent value
-                    metric_cell = await cells[0].query_selector(".gsc_rsb_f")
-                    if metric_cell:
-                        metric_name = (await metric_cell.text_content()).strip()
-                        all_time = await cells[1].text_content()
-                        recent = await cells[2].text_content()
+                # Get the label (which includes the metric name)
+                label_elem = await row.query_selector(".gsc_rsb_sc1 .gsc_rsb_f")
+                if label_elem:
+                    metric_name = await label_elem.text_content()
+                    
+                    # Get both all-time and recent values
+                    values = await row.query_selector_all(".gsc_rsb_std")
+                    if len(values) >= 2:
+                        all_time = await values[0].text_content()
+                        recent = await values[1].text_content()
                         
                         stats[metric_name] = {
                             'all': int(all_time),
@@ -60,33 +65,36 @@ class Scholar:
                         }
 
             # Get publications
-            pubs = await page.query_selector_all('#gsc_a_b .gsc_a_tr')
             publications = []
+            publication_elements = await page.query_selector_all('#gsc_a_b .gsc_a_tr')
             
-            for pub in pubs:
+            for pub in publication_elements:
                 title_elem = await pub.query_selector('.gsc_a_at')
-                cite_elem = await pub.query_selector('.gsc_a_ac')
+                citations_elem = await pub.query_selector('.gsc_a_ac')
                 year_elem = await pub.query_selector('.gsc_a_y .gsc_a_h')
-                
-                authors_venue = await pub.query_selector_all('.gs_gray')
-                
+
                 title = await title_elem.text_content() if title_elem else ''
-                citations = await cite_elem.text_content() if cite_elem else '0'
+                citations = await citations_elem.text_content() if citations_elem else '0'
                 year = await year_elem.text_content() if year_elem else ''
-                
-                authors = await authors_venue[0].text_content() if len(authors_venue) > 0 else ''
-                venue = await authors_venue[1].text_content() if len(authors_venue) > 1 else ''
+
+                try:
+                    citation_count = int(citations) if citations and citations != '' else 0
+                except ValueError:
+                    citation_count = 0
+
+                # Get authors and venue
+                authors = await pub.evaluate('(node) => { const gray = node.querySelectorAll(".gs_gray"); return gray[0]?.textContent || ""; }')
+                venue = await pub.evaluate('(node) => { const gray = node.querySelectorAll(".gs_gray"); return gray[1]?.textContent || ""; }')
 
                 publications.append({
                     'title': title,
                     'authors': authors,
                     'venue': venue,
-                    'citations': int(citations) if citations.isdigit() else 0,
+                    'num_citations': citation_count,
                     'year': year
                 })
 
             return {
-                'author_id': author_id,
                 'name': name,
                 'citations': stats.get('Citations', {'all': 0, 'recent': 0}),
                 'h_index': stats.get('h-index', {'all': 0, 'recent': 0}),
@@ -97,20 +105,33 @@ class Scholar:
         finally:
             await page.close()
 
-async def fetch_author_data(author_id: str) -> Dict:
-    """
-    Convenience function to fetch author data from Google Scholar.
-    
-    Args:
-        author_id (str): The Google Scholar author ID
-        
-    Returns:
-        Dict: Author data including citations, publications, and metrics
-    
-    Example:
-        >>> import asyncio
-        >>> data = asyncio.run(fetch_author_data("author_id"))
-        >>> print(f"Total citations: {data['citations']['all']}")
-    """
-    async with Scholar() as scholar:
-        return await scholar.get_author_data(author_id)
+    @staticmethod
+    def format_response(author_data: Dict) -> Dict:
+        """Format the scraped data to match the structure expected by the existing application"""
+        publications = []
+        for pub in author_data['publications']:
+            publications.append({
+                'bib': {
+                    'title': pub['title'],
+                    'authors': pub['authors'],
+                    'venue': pub['venue']
+                },
+                'num_citations': pub['num_citations'],
+                'year': pub.get('year', '')
+            })
+
+        return {
+            'name': author_data['name'],
+            'citedby': author_data['citations']['all'],
+            'citedby_recent': author_data['citations']['recent'],
+            'hindex': author_data['h_index']['all'],
+            'hindex_recent': author_data['h_index']['recent'],
+            'i10index': author_data['i10_index']['all'],
+            'i10index_recent': author_data['i10_index']['recent'],
+            'publications': publications
+        }
+
+async def fetch_scholar_data(scholar_id: str) -> Dict:
+    async with Scholar() as scraper:
+        author_data = await scraper.get_author_data(scholar_id)
+        return Scholar.format_response(author_data)

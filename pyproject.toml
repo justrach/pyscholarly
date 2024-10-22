@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyscholarly"
-version = "0.1.5"
+version = "0.1.62"
 authors = [
     { name = "Rach Pradhan", email = "me@rachit.ai" },
 ]
