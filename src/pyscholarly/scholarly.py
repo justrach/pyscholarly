@@ -2,29 +2,24 @@ from playwright.async_api import async_playwright
 from datetime import datetime
 import re
 import asyncio
-from typing import Dict, List, Optional, Union
-import json
+from typing import Dict, List, Optional, Union, Any
+from kew import TaskQueueManager, QueueConfig, QueuePriority, TaskStatus
 import logging
 from logging import Logger
 import random
-from bs4 import BeautifulSoup
-import aiohttp
 from pathlib import Path
-import os
+
 class ProxyRotator:
     def __init__(self, proxies: Optional[Union[str, List[str]]] = None):
-        # Convert proxy strings to proper format if needed
         if isinstance(proxies, str):
             proxies = [proxies]
         
         self.proxies = []
         if proxies:
             for proxy in proxies:
-                # Handle proxy strings with authentication
                 if '@' in proxy:
                     self.proxies.append(proxy)
                 else:
-                    # If no auth in URL, assume it's a simple proxy
                     self.proxies.append(f"http://{proxy}")
         
         self._current_index = 0
@@ -55,14 +50,11 @@ class Scholar:
         self.proxy_rotation = proxy_rotation
 
     async def _create_browser_context(self, proxy: Optional[str] = None):
-        """Create a new browser context with optional proxy"""
         browser_args = {}
         
         if proxy:
             self.logger.debug(f"Using proxy: {proxy}")
-            # Parse proxy string to extract authentication if present
             if '@' in proxy:
-                # Format: protocol://username:password@host:port
                 auth_part = proxy.split('@')[0].split('://')[1]
                 server_part = proxy.split('@')[1]
                 username, password = auth_part.split(':')
@@ -76,12 +68,13 @@ class Scholar:
                 browser_args["proxy"] = {"server": proxy}
         
         return await self._browser.new_context(**browser_args)
+
     async def __aenter__(self):
         self.logger.info("Initializing Scholar session")
         self._playwright = await async_playwright().start()
-        # Moved headless parameter here
         self._browser = await self._playwright.chromium.launch(headless=self.headless)
         return self
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self.logger.info("Closing Scholar session")
         if self._browser:
@@ -90,15 +83,12 @@ class Scholar:
             await self._playwright.stop()
 
     def _get_proxy(self) -> Optional[str]:
-        """Get next proxy based on rotation strategy"""
         if self.proxy_rotation == 'random':
             return self.proxy_rotator.get_random()
         return self.proxy_rotator.get_next()
 
-    async def _get_page_content(self, url: str) -> str:
+    async def _get_page_content(self, url: str, context) -> str:
         self.logger.debug(f"Fetching content from {url}")
-        proxy = self._get_proxy()
-        context = await self._create_browser_context(proxy)
         page = await context.new_page()
         
         try:
@@ -111,66 +101,51 @@ class Scholar:
             raise
         finally:
             await page.close()
-            await context.close()
 
-    async def _get_ytd_citations(self, citation_link: str) -> int:
-        """Get year-to-date citations for a specific paper"""
+    async def _get_ytd_citations(self, citation_link: str, context) -> int:
         if not citation_link:
             return 0
             
         self.logger.debug(f"Getting YTD citations from link: {citation_link}")
         
         try:
-            # Create debug directory if it doesn't exist
-            debug_dir = Path('debug_pages')
-            debug_dir.mkdir(exist_ok=True)
-            
-            # Use Playwright page to navigate
-            page = await self._browser.new_page()
+            page = await context.new_page()
             await page.goto(citation_link)
             
-            # Modify URL for current year
             current_year = datetime.now().year
             ytd_url = f"{page.url}&as_ylo={current_year}"
             
-            # Navigate to the YTD URL
             await page.goto(ytd_url)
             
-            # Save the page content for debugging
-            html = await page.content()
-            ytd_filename = debug_dir / f"ytd_page_{hash(citation_link)}.html"
-            with open(ytd_filename, 'w', encoding='utf-8') as f:
-                f.write(html)
-            
-            # Use Playwright's selector to find the results count
             results_div = await page.query_selector('#gs_ab_md .gs_ab_mdw')
             if results_div:
                 results_text = await results_div.text_content()
                 self.logger.debug(f"Found results text: {results_text}")
                 
-                # Try both "About X results" and "X results" formats
                 match = re.search(r'(?:About )?(\d+(?:,\d+)?)\s+results?', results_text)
                 if match:
                     count = int(match.group(1).replace(',', ''))
                     self.logger.info(f"Found {count} YTD citations")
                     return count
                     
-            self.logger.warning(f"Could not find citation count in page. Full HTML saved to {ytd_filename}")
+            self.logger.warning("Could not find citation count in page")
             return 0
             
         finally:
             await page.close()
+
     async def get_author_data(self, scholar_id: str) -> Dict:
         self.logger.info(f"Fetching author data for scholar ID: {scholar_id}")
         url = f"https://scholar.google.com/citations?user={scholar_id}&hl=en&pagesize=100&view_op=list_works"
-        content = await self._get_page_content(url)
-
+        
         proxy = self._get_proxy()
         context = await self._create_browser_context(proxy)
-        page = await context.new_page()
-        await page.set_content(content)
-
+        
         try:
+            content = await self._get_page_content(url, context)
+            page = await context.new_page()
+            await page.set_content(content)
+
             author_info = await page.evaluate('''() => {
                 const name = document.querySelector("#gsc_prf_in")?.innerText || "";
                 
@@ -216,7 +191,7 @@ class Scholar:
                     except ValueError:
                         citation_count = 0
 
-                    ytd_citations = await self._get_ytd_citations(pub['citation_link']) if pub['citation_link'] else 0
+                    ytd_citations = await self._get_ytd_citations(pub['citation_link'], context) if pub['citation_link'] else 0
 
                     publications.append({
                         'title': pub['title'],
@@ -253,7 +228,6 @@ class Scholar:
 
     @staticmethod
     def format_response(author_data: Dict) -> Dict:
-        """Format the scraped data to match the structure expected by the existing application"""
         publications = []
         for pub in author_data['publications']:
             publications.append({
@@ -293,3 +267,78 @@ async def fetch_scholar_data(
     ) as scraper:
         author_data = await scraper.get_author_data(scholar_id)
         return Scholar.format_response(author_data)
+
+# New function to handle multiple scholars
+async def fetch_multiple_scholars(
+    scholar_ids: List[str],
+    logger: Optional[Logger] = None,
+    proxies: Optional[Union[str, List[str]]] = None,
+    headless: bool = False,
+    proxy_rotation: str = 'sequential',
+    max_workers: int = 3,
+    redis_url: str = "redis://localhost:6379"
+) -> List[Dict]:
+    """
+    Fetch data for multiple scholars using a task queue for parallel processing
+    """
+    # Initialize task queue manager
+    queue_manager = TaskQueueManager(redis_url=redis_url)
+    await queue_manager.initialize()
+    
+    # Create queue configuration
+    queue_config = QueueConfig(
+        name="scholar_queue",
+        max_workers=max_workers,
+        max_size=1000,
+        priority=QueuePriority.MEDIUM
+    )
+    await queue_manager.create_queue(queue_config)
+    
+    # Initialize Scholar instance to be shared across workers
+    scholar = Scholar(
+        logger=logger,
+        proxies=proxies,
+        headless=headless,
+        proxy_rotation=proxy_rotation
+    )
+    
+    async def process_scholar(scholar_id: str) -> Dict:
+        """Worker function to process individual scholar"""
+        try:
+            async with scholar:
+                author_data = await scholar.get_author_data(scholar_id)
+                return Scholar.format_response(author_data)
+        except Exception as e:
+            logger.error(f"Error processing scholar {scholar_id}: {e}")
+            return None
+
+    try:
+        # Submit tasks for each scholar
+        tasks = []
+        for scholar_id in scholar_ids:
+            task_id = f"scholar_{scholar_id}"
+            task_info = await queue_manager.submit_task(
+                task_id=task_id,
+                queue_name="scholar_queue",
+                task_type="scholar_fetch",
+                task_func=process_scholar,
+                priority=QueuePriority.MEDIUM,
+                scholar_id=scholar_id
+            )
+            tasks.append(task_info)
+
+        # Wait for all tasks to complete
+        results = []
+        for task in tasks:
+            while True:
+                task_info = await queue_manager.get_task_status(task.task_id)
+                if task_info.status in [TaskStatus.COMPLETED, TaskStatus.FAILED]:
+                    results.append(task_info.result)
+                    break
+                await asyncio.sleep(0.1)
+
+        return results
+
+    finally:
+        # Cleanup
+        await queue_manager.shutdown()

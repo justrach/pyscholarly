@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: pyscholarly
-Version: 0.1.64
+Version: 0.1.65
 Summary: An async Python library for scraping Google Scholar profiles
 Author-email: Rach Pradhan <me@rachit.ai>
 Project-URL: Homepage, https://github.com/yourusername/pyscholarly
@@ -18,6 +18,7 @@ Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: playwright>=1.40.0
+Requires-Dist: aiohttp>=3.8.0
 
 # PyScholarly
 
