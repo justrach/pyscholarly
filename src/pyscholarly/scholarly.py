@@ -105,8 +105,10 @@ class Scholar:
     async def _get_ytd_citations(self, citation_link: str, context) -> int:
         """Get YTD citations directly from the author's profile page"""
         try:
-            # We're already on the profile page, so just evaluate the JavaScript
-            ytd_citations = await context.evaluate('''() => {
+            # Get the current page from the context
+            page = context.pages[0]  # Get the active page
+            
+            ytd_citations = await page.evaluate('''() => {
                 const yearBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_t');
                 const citeBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_a');
                 
