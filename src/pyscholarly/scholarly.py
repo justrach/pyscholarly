@@ -103,36 +103,38 @@ class Scholar:
             await page.close()
 
     async def _get_ytd_citations(self, citation_link: str, context) -> int:
-        if not citation_link:
-            return 0
-            
-        self.logger.debug(f"Getting YTD citations from link: {citation_link}")
-        
+        """Get YTD citations directly from the author's profile page"""
         try:
-            page = await context.new_page()
-            await page.goto(citation_link)
-            
-            current_year = datetime.now().year
-            ytd_url = f"{page.url}&as_ylo={current_year}"
-            
-            await page.goto(ytd_url)
-            
-            results_div = await page.query_selector('#gs_ab_md .gs_ab_mdw')
-            if results_div:
-                results_text = await results_div.text_content()
-                self.logger.debug(f"Found results text: {results_text}")
+            # We're already on the profile page, so just evaluate the JavaScript
+            ytd_citations = await context.evaluate('''() => {
+                const yearBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_t');
+                const citeBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_a');
                 
-                match = re.search(r'(?:About )?(\d+(?:,\d+)?)\s+results?', results_text)
-                if match:
-                    count = int(match.group(1).replace(',', ''))
-                    self.logger.info(f"Found {count} YTD citations")
-                    return count
-                    
-            self.logger.warning("Could not find citation count in page")
-            return 0
+                // Hardcoded to look for 2024
+                const targetYear = "2024";
+                let targetYearIndex = -1;
+                
+                yearBars.forEach((yearBar, index) => {
+                    if (yearBar.textContent === targetYear) {
+                        targetYearIndex = index;
+                    }
+                });
+                
+                if (targetYearIndex !== -1) {
+                    const citeBar = citeBars[targetYearIndex];
+                    const citeCount = citeBar.querySelector('.gsc_g_al')?.textContent;
+                    return parseInt(citeCount) || 0;
+                }
+                
+                return 0;
+            }''')
             
-        finally:
-            await page.close()
+            self.logger.info(f"Found {ytd_citations} YTD citations")
+            return ytd_citations
+            
+        except Exception as e:
+            self.logger.error(f"Error getting YTD citations: {e}")
+            return 0
 
     async def get_author_data(self, scholar_id: str) -> Dict:
         self.logger.info(f"Fetching author data for scholar ID: {scholar_id}")
