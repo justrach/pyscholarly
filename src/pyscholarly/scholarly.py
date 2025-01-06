@@ -103,31 +103,21 @@ class Scholar:
             await page.close()
 
     async def _get_ytd_citations(self, citation_link: str, context) -> int:
-        """Get YTD citations directly from the author's profile page"""
-        try:
-            # Get the current page from the context
-            page = context.pages[0]  # Get the active page
+        if not citation_link:
+            return 0
             
+        self.logger.debug(f"Getting YTD citations from link: {citation_link}")
+        
+        try:
+            page = await context.new_page()
+            await page.goto(citation_link)
+            
+            # Look for the citation count in the graph element
             ytd_citations = await page.evaluate('''() => {
-                const yearBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_t');
-                const citeBars = document.querySelectorAll('#gsc_rsb_cit .gsc_md_hist_b .gsc_g_a');
-                
-                // Hardcoded to look for 2024
-                const targetYear = "2024";
-                let targetYearIndex = -1;
-                
-                yearBars.forEach((yearBar, index) => {
-                    if (yearBar.textContent === targetYear) {
-                        targetYearIndex = index;
-                    }
-                });
-                
-                if (targetYearIndex !== -1) {
-                    const citeBar = citeBars[targetYearIndex];
-                    const citeCount = citeBar.querySelector('.gsc_g_al')?.textContent;
-                    return parseInt(citeCount) || 0;
+                const citationElement = document.querySelector('.gsc_oci_g_a .gsc_oci_g_al');
+                if (citationElement) {
+                    return parseInt(citationElement.textContent) || 0;
                 }
-                
                 return 0;
             }''')
             
@@ -137,6 +127,9 @@ class Scholar:
         except Exception as e:
             self.logger.error(f"Error getting YTD citations: {e}")
             return 0
+            
+        finally:
+            await page.close()
 
     async def get_author_data(self, scholar_id: str) -> Dict:
         self.logger.info(f"Fetching author data for scholar ID: {scholar_id}")
