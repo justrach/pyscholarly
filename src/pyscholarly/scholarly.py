@@ -50,29 +50,35 @@ class Scholar:
         self.proxy_rotation = proxy_rotation
 
     async def _create_browser_context(self, proxy: Optional[str] = None):
-        browser_args = {}
-        
-        if proxy:
-            self.logger.debug(f"Using proxy: {proxy}")
-            if '@' in proxy:
-                auth_part = proxy.split('@')[0].split('://')[1]
-                server_part = proxy.split('@')[1]
-                username, password = auth_part.split(':')
-                
-                browser_args["proxy"] = {
-                    "server": f"http://{server_part}",
-                    "username": username,
-                    "password": password
-                }
-            else:
-                browser_args["proxy"] = {"server": proxy}
-        
+        browser_args = {
+            "ignore_https_errors": True,  # Ignore HTTPS errors
+            "bypass_csp": True,  # Bypass Content Security Policy
+        }
         return await self._browser.new_context(**browser_args)
 
     async def __aenter__(self):
         self.logger.info("Initializing Scholar session")
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self.headless)
+        
+        # Get proxy configuration
+        proxy = self._get_proxy()
+        launch_args = {
+            "headless": self.headless,
+        }
+        
+        if proxy:
+            self.logger.debug(f"Using proxy: {proxy}")
+            if ':' in proxy:
+                parts = proxy.split(':')
+                if len(parts) == 4:  # IP:PORT:USERNAME:PASSWORD format
+                    ip, port, username, password = parts
+                    launch_args["proxy"] = {
+                        "server": f"http://{ip}:{port}",
+                        "username": username,
+                        "password": password
+                    }
+        
+        self._browser = await self._playwright.chromium.launch(**launch_args)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -92,19 +98,24 @@ class Scholar:
         page = await context.new_page()
         
         try:
-            await page.goto(url)
-            await page.wait_for_selector("#gsc_rsb_cit")
+            await page.goto(url, timeout=30000, wait_until='networkidle')
+            await page.wait_for_selector("#gsc_rsb_cit", timeout=30000)
             content = await page.content()
+            await page.close()
             return content
         except Exception as e:
             self.logger.error(f"Error fetching page content: {e}")
+            if page:  # Make sure page exists before trying to close it
+                await page.close()
             raise
-        finally:
-            await page.close()
 
     async def _get_ytd_citations(self, citation_link: str, context) -> int:
         if not citation_link:
             return 0
+            
+        # Ensure the URL is complete by adding base URL if needed
+        if citation_link.startswith('/'):
+            citation_link = f"https://scholar.google.com{citation_link}"
             
         self.logger.debug(f"Getting YTD citations from link: {citation_link}")
         
@@ -112,13 +123,13 @@ class Scholar:
             page = await context.new_page()
             await page.goto(citation_link)
             
-            # Look for the citation count in the graph element
+            # Wait for the page to load
+            await page.wait_for_load_state('networkidle')
+            
+            # Look specifically for the link with ylo=2025 and yhi=2025
             ytd_citations = await page.evaluate('''() => {
-                const citationElement = document.querySelector('.gsc_oci_g_a .gsc_oci_g_al');
-                if (citationElement) {
-                    return parseInt(citationElement.textContent) || 0;
-                }
-                return 0;
+                const ytdLink = document.querySelector('a[href*="as_ylo=2025"][href*="as_yhi=2025"] .gsc_oci_g_al');
+                return ytdLink ? parseInt(ytdLink.textContent) : 0;
             }''')
             
             self.logger.info(f"Found {ytd_citations} YTD citations")
@@ -171,7 +182,7 @@ class Scholar:
                     return pubs.map(pub => ({
                         title: pub.querySelector('.gsc_a_at')?.innerText || '',
                         citations: pub.querySelector('.gsc_a_ac')?.innerText || '0',
-                        citation_link: pub.querySelector('.gsc_a_ac')?.href || null,
+                        citation_link: pub.querySelector('.gsc_a_at')?.href || null,
                         year: pub.querySelector('.gsc_a_y .gsc_a_h')?.innerText || '',
                         authors: pub.querySelectorAll('.gs_gray')[0]?.innerText || '',
                         venue: pub.querySelectorAll('.gs_gray')[1]?.innerText || ''
